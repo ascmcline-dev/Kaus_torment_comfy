@@ -1,0 +1,3 @@
+Takes 1 image as input generated a mask based on image, and outputs a IMAGE AND MASK.
+
+Considered due to previous generation had issues with generating a mask output from an output of image creation. 
