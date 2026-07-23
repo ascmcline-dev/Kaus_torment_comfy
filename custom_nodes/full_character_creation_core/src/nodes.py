@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from typing import Any
 
@@ -123,7 +124,7 @@ SHOT_TYPES = ["Face Close-Up", "Head and Shoulders", "Chest-Up", "Waist-Up Midsh
 SHOT_PROMPTS = {
     "Face Close-Up": "close-up face portrait framed from slightly above the complete head to the upper shoulders, face occupying most of the image",
     "Head and Shoulders": "head-and-shoulders portrait with full head, hair, neck, shoulders, and upper chest visible",
-    "Chest-Up": "chest-up portrait framed from slightly above the complete head to below the chest, both shoulders and upper arms visible",
+    "Chest-Up": "true chest-up portrait with the camera pulled back, frame beginning slightly above the complete head and ending below the bust line, full neck, both shoulders, complete upper chest, both upper arms, and the full visible bust area inside the image",
     "Waist-Up Midshot": "true waist-up midshot framed from slightly above the complete head to the navel or lower mid-abdomen, full head, both shoulders, arms, torso, natural waist, and mid-abdomen visible",
     "Three-Quarter Body": "three-quarter-body photograph framed from slightly above the complete head to below the knees, arms and legs clearly visible",
     "Full Body": "full-body photograph with the entire subject visible from head to feet and balanced space around the body",
@@ -141,28 +142,92 @@ CAMERA_PROMPTS = {
     "Back View": "direct back-facing camera view",
 }
 POSES = ["Neutral Standing", "Relaxed Standing", "Seated", "Leaning", "Walking", "Arms Relaxed", "Arms Loosely Crossed", "One Hand at Waist", "Custom"]
-EXPRESSIONS = ["Neutral", "Natural Closed-Mouth Smile", "Genuine Smile", "Serious", "Focused", "Thoughtful", "Custom"]
+EXPRESSIONS = [
+    "Neutral", "Natural Closed-Mouth Smile", "Genuine Smile", "Big Smile", "Laughing",
+    "Serious", "Focused", "Thoughtful", "Concerned", "Surprised", "Shy", "Nervous",
+    "Confident", "Determined", "Angry", "Fearful", "Disgusted", "Pain / Strain",
+    "Playful", "Cheeky", "Pout", "Wink", "Tongue Slightly Out", "Ahegao (Stylized Adult)",
+    "Custom",
+]
+EXPRESSION_PROMPTS = {
+    "Ahegao (Stylized Adult)": "exaggerated stylized adult ahegao expression with crossed or upward-rolled eyes, open mouth, and tongue visible; intentionally non-natural facial acting",
+    "Pain / Strain": "controlled visible strain or pain expression while preserving recognizable facial structure",
+    "Tongue Slightly Out": "playful expression with the tongue only slightly visible",
+}
 BODY_REGIONS = ["Upper Torso", "Chest and Ribcage", "Abdomen and Waist", "Upper Back and Shoulders", "Lower Back and Waist", "Hips Front", "Hips Rear", "Left Side Torso", "Right Side Torso", "Custom"]
 STAGES = ["Krea Identity Anchor", "Qwen Face Documentation", "Qwen Upper-Body Anchor", "Qwen Anatomy Documentation", "Qwen Clothing Edit", "Qwen Body Close-Up", "Krea Mini-LoRA Expansion"]
 CLOTHING_MODES = ["Profile Default", "Exact Outfit Override", "Clinical Unclothed", "Preserve Reference Clothing"]
+BODY_DETAIL_MODES = ["Auto by Stage", "Clothed Silhouette", "Clinical Anatomy"]
+OUTFIT_COVERAGE = ["Auto by Shot", "Complete Outfit", "Upper-Body Garment", "Lower-Body Garment", "One-Piece Garment", "Swimwear Set"]
+CLOTHING_PRIORITIES = ["Standard", "Strong", "Maximum"]
 BACKGROUNDS = ["Plain Neutral", "Simple Indoor", "Simple Outdoor", "Clinical Neutral", "Natural Home", "Gym", "Custom"]
 LIGHTING = ["Soft Natural Daylight", "Even Window Light", "Clinical Even Light", "Warm Indoor Light", "Overcast Outdoor Light", "Custom"]
 PHOTO_STYLES = ["Authentic Consumer Camera", "Personal Cellphone Photo", "Identity Documentation", "Clinical Documentation", "Standard Camera Photo"]
 
 
+PRESET_OUTFITS: dict[str, dict[str, str]] = {
+    "Simple Fitted T-Shirt": {
+        "kind": "complete",
+        "top": "simple fitted T-shirt",
+        "bottom": "high-waisted fitted jeans",
+        "footwear": "casual low-profile shoes",
+    },
+    "Opaque Fitted Tank Top": {
+        "kind": "complete",
+        "top": "opaque fitted tank top",
+        "bottom": "high-waisted fitted jeans",
+        "footwear": "casual low-profile shoes",
+    },
+    "Casual Jeans and T-Shirt": {
+        "kind": "complete",
+        "top": "casual fitted T-shirt",
+        "bottom": "well-fitted jeans",
+        "footwear": "casual sneakers",
+    },
+    "Fitted Athletic Outfit": {
+        "kind": "complete",
+        "top": "fitted opaque athletic top",
+        "bottom": "high-waisted athletic leggings",
+        "footwear": "training shoes",
+    },
+    "Simple Dress": {
+        "kind": "one_piece",
+        "one_piece": "simple fitted knee-length dress",
+        "footwear": "simple low-profile shoes",
+    },
+    "Business Casual": {
+        "kind": "complete",
+        "top": "fitted business-casual blouse",
+        "bottom": "tailored trousers",
+        "footwear": "simple flats",
+    },
+    "Swimwear": {
+        "kind": "swimwear",
+        "swimwear_top": "matching fitted swimwear top",
+        "swimwear_bottom": "matching fitted swimwear bottoms",
+    },
+    "Clinical Unclothed Documentation": {"kind": "clinical"},
+    "Custom": {"kind": "custom"},
+}
+
+
 def _heritage_prompt(heritage: str, custom: str) -> str:
-    if heritage == "Unspecified": return ""
-    if heritage == "Custom": return custom.strip()
+    if heritage == "Unspecified":
+        return ""
+    if heritage == "Custom":
+        return custom.strip()
     return f"{heritage.lower()} heritage"
 
 
 def _hair_value(value: str, custom: str, label: str) -> str:
-    if value == "Custom": return custom.strip()
+    if value == "Custom":
+        return custom.strip()
     return f"{value.lower()} {label}" if value else ""
 
 
 def _bust_prompt(gender: str, size: str, shape: str, position: str, firmness: str, augmentation: str) -> str:
-    if gender != "Adult Female": return ""
+    if gender != "Adult Female":
+        return ""
     return _join(
         BUST_SIZE_PROMPTS.get(size, ""),
         BUST_SHAPE_PROMPTS.get(shape, ""),
@@ -172,16 +237,29 @@ def _bust_prompt(gender: str, size: str, shape: str, position: str, firmness: st
     )
 
 
+def _clothed_bust_prompt(gender: str, size: str, shape: str, position: str) -> str:
+    if gender != "Adult Female":
+        return ""
+    size_text = BUST_SIZE_PROMPTS.get(size, "")
+    shape_text = BUST_SHAPE_PROMPTS.get(shape, "")
+    position_text = BUST_POSITION_PROMPTS.get(position, "")
+    if size_text:
+        size_text = size_text.replace("bust with", "bust shaping the garment with")
+    return _join(size_text, shape_text, position_text)
+
+
 def _split_lines(text: str) -> list[str]:
     values = []
     for block in re.split(r"[\r\n;]+", text or ""):
         cleaned = re.sub(r"^\s*(?:[-*•]+|\d+[.)])\s*", "", block).strip(" ,.;")
-        if cleaned: values.append(cleaned)
+        if cleaned:
+            values.append(cleaned)
     return values
 
 
 def _marks_prompt(kind: str, status: str, description: str) -> tuple[str, list[str], str]:
-    if status == "None": return "", [], ""
+    if status == "None":
+        return "", [], ""
     entries = _split_lines(description)
     warnings = []
     if not entries:
@@ -190,7 +268,8 @@ def _marks_prompt(kind: str, status: str, description: str) -> tuple[str, list[s
         warnings.append(f"One {kind.lower()} is selected but multiple lines were supplied.")
     if status == "Multiple" and len(entries) < 2:
         warnings.append(f"Multiple {kind.lower()}s are selected but fewer than two lines were supplied.")
-    if not entries: return "", [], " ".join(warnings)
+    if not entries:
+        return "", [], " ".join(warnings)
     if len(entries) == 1:
         prompt = f"one permanent identity {kind.lower()} with exact placement: {entries[0]}"
     else:
@@ -199,20 +278,295 @@ def _marks_prompt(kind: str, status: str, description: str) -> tuple[str, list[s
     return prompt, entries, " ".join(warnings)
 
 
-def _visible_marks(entries: list[str], shot_type: str) -> str:
-    if not entries: return ""
-    if shot_type in {"Face Close-Up", "Head and Shoulders", "Chest-Up", "Waist-Up Midshot", "Three-Quarter Body", "Full Body"}:
-        return "; ".join(entries)
-    return "; ".join(entries)
+def _structured_piercing_prompt(location: str, piercing_type: str, material: str, visibility: str, custom: str) -> str:
+    location = (location or "").strip()
+    piercing_type = (piercing_type or "").strip()
+    material = (material or "").strip()
+    visibility = (visibility or "").strip()
+    custom = (custom or "").strip()
+    if not any((location, piercing_type, material, custom)):
+        return ""
+    if location.lower() in {"septum", "nasal septum", "center septum"}:
+        placement = "centered through the nasal septum in the middle area directly below the nose, not through either nostril and not on the upper lip"
+    else:
+        placement = f"at the exact {location}" if location else "at the specified facial location"
+    item = custom or " ".join(x for x in (material, piercing_type) if x) or "piercing jewelry"
+    visibility_text = f"{visibility.lower()} visibility" if visibility else "clearly visible"
+    return f"one permanent identity piercing: {item}, positioned {placement}, {visibility_text}"
+
+
+def _infer_outfit_kind(text: str) -> str:
+    lowered = (text or "").lower()
+    if any(token in lowered for token in ("bikini", "swimwear", "swimsuit", "two-piece", "two piece")):
+        return "swimwear"
+    if any(token in lowered for token in ("dress", "bodysuit", "romper", "jumpsuit", "one-piece", "one piece")):
+        return "one_piece"
+    return "complete"
+
+
+def _build_profile_outfit(
+    default_clothing: str,
+    exact_default_clothing: str,
+    default_top: str,
+    default_bottom: str,
+    default_footwear: str,
+    default_outerwear: str,
+    default_one_piece: str,
+    default_swimwear_top: str,
+    default_swimwear_bottom: str,
+    outfit_notes: str,
+) -> tuple[str, dict[str, str]]:
+    preset = dict(PRESET_OUTFITS.get(default_clothing, {"kind": "custom"}))
+
+    components = {
+        "kind": preset.get("kind", "custom"),
+        "top": default_top.strip() or preset.get("top", ""),
+        "bottom": default_bottom.strip() or preset.get("bottom", ""),
+        "footwear": default_footwear.strip() or preset.get("footwear", ""),
+        "outerwear": default_outerwear.strip() or preset.get("outerwear", ""),
+        "one_piece": default_one_piece.strip() or preset.get("one_piece", ""),
+        "swimwear_top": default_swimwear_top.strip() or preset.get("swimwear_top", ""),
+        "swimwear_bottom": default_swimwear_bottom.strip() or preset.get("swimwear_bottom", ""),
+        "raw": exact_default_clothing.strip(),
+        "notes": outfit_notes.strip(),
+    }
+
+    if components["raw"]:
+        components["kind"] = _infer_outfit_kind(components["raw"])
+
+    kind = components["kind"]
+    if kind == "clinical":
+        return "unclothed adult subject in neutral clinical anatomy documentation", components
+
+    if components["raw"]:
+        if kind == "swimwear":
+            prompt = _join(
+                f"fully wearing a matching two-piece swimwear set described as {components['raw']}",
+                "a fitted swimwear top and matching swimwear bottoms are both present",
+                "realistic fabric edges, straps, seams, and tension",
+                components["notes"],
+            )
+        elif kind == "one_piece":
+            prompt = _join(
+                f"fully wearing the one-piece garment described as {components['raw']}",
+                components["footwear"] and f"with {components['footwear']}",
+                components["notes"],
+            )
+        else:
+            prompt = _join(
+                f"fully dressed in the complete outfit described as {components['raw']}",
+                components["notes"],
+            )
+        return prompt, components
+
+    if kind == "swimwear":
+        prompt = _join(
+            "fully wearing a matching two-piece swimwear set",
+            components["swimwear_top"],
+            components["swimwear_bottom"],
+            "realistic fabric edges, straps, seams, and tension",
+            components["notes"],
+        )
+    elif kind == "one_piece":
+        prompt = _join(
+            "fully wearing a complete one-piece outfit",
+            components["one_piece"],
+            components["outerwear"],
+            components["footwear"],
+            components["notes"],
+        )
+    elif kind == "complete":
+        prompt = _join(
+            "fully dressed in a complete outfit consisting of",
+            components["top"],
+            components["bottom"],
+            components["outerwear"],
+            components["footwear"],
+            components["notes"],
+        )
+    else:
+        prompt = components["notes"]
+    return prompt, components
+
+
+def _override_components(
+    exact_outfit: str,
+    exact_top: str,
+    exact_bottom: str,
+    exact_footwear: str,
+    exact_outerwear: str,
+    outfit_coverage: str,
+) -> dict[str, str]:
+    raw = exact_outfit.strip()
+    inferred_kind = _infer_outfit_kind(raw)
+    if outfit_coverage == "Swimwear Set":
+        kind = "swimwear"
+    elif outfit_coverage == "One-Piece Garment":
+        kind = "one_piece"
+    elif outfit_coverage in {"Upper-Body Garment", "Lower-Body Garment", "Complete Outfit"}:
+        kind = "complete"
+    else:
+        kind = inferred_kind
+
+    return {
+        "kind": kind,
+        "top": exact_top.strip(),
+        "bottom": exact_bottom.strip(),
+        "footwear": exact_footwear.strip(),
+        "outerwear": exact_outerwear.strip(),
+        "one_piece": raw if kind == "one_piece" else "",
+        "swimwear_top": exact_top.strip(),
+        "swimwear_bottom": exact_bottom.strip(),
+        "raw": raw,
+        "notes": "",
+    }
+
+
+def _component_phrase(components: dict[str, str]) -> str:
+    kind = components.get("kind", "complete")
+    raw = components.get("raw", "")
+    if raw:
+        if kind == "swimwear":
+            return _join(
+                f"fully wearing a matching two-piece swimwear set described as {raw}",
+                components.get("top") or "a fitted swimwear top",
+                components.get("bottom") or "matching swimwear bottoms",
+                "realistic fabric edges, straps, seams, and tension",
+            )
+        if kind == "one_piece":
+            return _join(f"fully wearing the one-piece garment described as {raw}", components.get("footwear"))
+        return _join(f"fully dressed in the complete outfit described as {raw}", components.get("top"), components.get("bottom"), components.get("outerwear"), components.get("footwear"))
+
+    if kind == "swimwear":
+        return _join(
+            "fully wearing a matching two-piece swimwear set",
+            components.get("swimwear_top") or components.get("top") or "fitted swimwear top",
+            components.get("swimwear_bottom") or components.get("bottom") or "matching swimwear bottoms",
+            "realistic fabric edges, straps, seams, and tension",
+        )
+    if kind == "one_piece":
+        return _join("fully wearing a complete one-piece outfit", components.get("one_piece"), components.get("outerwear"), components.get("footwear"))
+    return _join(
+        "fully dressed in a complete outfit consisting of",
+        components.get("top"), components.get("bottom"), components.get("outerwear"), components.get("footwear"),
+    )
+
+
+def _crop_outfit_prompt(
+    base_prompt: str,
+    components: dict[str, str],
+    shot_type: str,
+    body_region: str,
+    priority: str,
+) -> tuple[str, str]:
+    if not base_prompt:
+        return "", ""
+
+    kind = components.get("kind", "complete")
+    top = components.get("top") or components.get("swimwear_top") or (components.get("raw") if kind != "one_piece" else "")
+    bottom = components.get("bottom") or components.get("swimwear_bottom")
+    footwear = components.get("footwear")
+    one_piece = components.get("one_piece") or (components.get("raw") if kind == "one_piece" else "")
+
+    if shot_type == "Face Close-Up":
+        if kind == "swimwear":
+            crop = "the swimwear-top straps and neckline are clearly visible at the lower edge of the portrait"
+        elif kind == "one_piece":
+            crop = f"the neckline and shoulder area of {one_piece or 'the one-piece garment'} are clearly visible at the lower edge of the portrait"
+        else:
+            crop = f"the neckline and upper shoulder area of {top or 'the selected upper-body garment'} are clearly visible at the lower edge of the portrait"
+    elif shot_type == "Head and Shoulders":
+        if kind == "swimwear":
+            crop = "the swimwear top neckline and both straps are clearly visible across the shoulders and upper chest"
+        elif kind == "one_piece":
+            crop = f"the upper portion, neckline, and shoulders of {one_piece or 'the one-piece garment'} are clearly visible"
+        else:
+            crop = f"the upper portion, neckline, shoulders, and sleeves or straps of {top or 'the selected upper-body garment'} are clearly visible"
+    elif shot_type == "Chest-Up":
+        if kind == "swimwear":
+            crop = "the complete swimwear top is clearly visible across the chest with both sides, straps, neckline, and fabric edges present"
+        elif kind == "one_piece":
+            crop = f"the complete upper portion of {one_piece or 'the one-piece garment'} is clearly visible across the chest and upper torso"
+        else:
+            crop = f"the complete {top or 'upper-body garment'} is clearly visible across the chest and upper torso with neckline, seams, sleeves or straps, and fabric edges present"
+    elif shot_type == "Waist-Up Midshot":
+        if kind == "swimwear":
+            crop = "the complete swimwear top and the upper edge of the matching swimwear bottoms are clearly visible"
+        elif kind == "one_piece":
+            crop = f"the upper and waist portions of {one_piece or 'the one-piece garment'} are clearly visible"
+        else:
+            crop = _join(
+                f"the complete {top or 'upper-body garment'} is visible",
+                f"the waistband or upper edge of {bottom or 'the matching lower-body garment'} is visible at the waist",
+            )
+    elif shot_type == "Three-Quarter Body":
+        if kind == "swimwear":
+            crop = "the complete matching swimwear top and swimwear bottoms are both clearly visible in the frame"
+        elif kind == "one_piece":
+            crop = f"the complete {one_piece or 'one-piece garment'} is clearly visible from shoulders through below the knees"
+        else:
+            crop = _join(
+                f"the complete {top or 'upper-body garment'} and {bottom or 'lower-body garment'} are clearly visible",
+                "the outfit remains continuous through the waist, hips, and legs",
+            )
+    elif shot_type == "Full Body":
+        if kind == "swimwear":
+            crop = "the complete matching swimwear top and swimwear bottoms are both clearly visible from head to feet"
+        elif kind == "one_piece":
+            crop = _join(
+                f"the complete {one_piece or 'one-piece garment'} is clearly visible from head to feet",
+                footwear and f"the {footwear} are visible",
+            )
+        else:
+            crop = _join(
+                f"the complete {top or 'upper-body garment'} and {bottom or 'lower-body garment'} are clearly visible",
+                footwear and f"the {footwear} are visible",
+                "the full outfit remains continuous from shoulders through the feet",
+            )
+    else:
+        region = body_region.lower()
+        if any(token in region for token in ("upper", "chest", "ribcage", "shoulder")):
+            crop = f"the selected upper-body garment is clearly visible across the documented {region} region"
+        elif any(token in region for token in ("abdomen", "waist", "hip", "lower")):
+            crop = f"the waistband and lower-body garment are clearly visible across the documented {region} region"
+        else:
+            crop = "the requested garment remains clearly visible across the selected body-documentation region"
+
+    final_lock = ""
+    if priority in {"Strong", "Maximum"}:
+        final_lock = "garment visibility confirmation: the requested outfit remains clearly visible in the selected crop"
+    if priority == "Maximum":
+        final_lock = _join(final_lock, "the selected clothing is the dominant wardrobe state in this image")
+    return _join(base_prompt, crop), final_lock
+
+
+def _resolve_body_mode(stage: str, clothing_mode: str, body_detail_mode: str) -> str:
+    if clothing_mode == "Clinical Unclothed":
+        return "Clinical Anatomy"
+    if clothing_mode in {"Exact Outfit Override", "Preserve Reference Clothing"}:
+        return "Clothed Silhouette"
+    if body_detail_mode != "Auto by Stage":
+        return body_detail_mode
+    if stage in {"Qwen Anatomy Documentation", "Qwen Body Close-Up"}:
+        return "Clinical Anatomy"
+    return "Clothed Silhouette"
 
 
 class CharacterBlueprintCreator:
     CATEGORY = "character creation/core"
     FUNCTION = "build_blueprint"
-    DESCRIPTION = "Creates a reusable adult character blueprint with separate face, body, bust, markings, and clothing prompts."
+    DESCRIPTION = "Creates a reusable adult character blueprint with separate clothed-silhouette, clinical-anatomy, markings, and structured outfit prompts."
 
-    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "CHARACTER_BLUEPRINT", "STRING")
-    RETURN_NAMES = ("face_identity", "upper_body_identity", "lower_body_identity", "bust_prompt", "marks_prompt", "default_clothing_prompt", "full_profile_prompt", "character_id", "character_blueprint", "warnings")
+    RETURN_TYPES = (
+        "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING",
+        "CHARACTER_BLUEPRINT", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING",
+    )
+    RETURN_NAMES = (
+        "face_identity", "upper_body_identity", "lower_body_identity", "bust_prompt", "marks_prompt",
+        "default_clothing_prompt", "full_profile_prompt", "character_id", "character_blueprint", "warnings",
+        "clothed_upper_body", "anatomy_upper_body", "clothed_lower_body", "anatomy_lower_body",
+        "structured_outfit_prompt", "character_blueprint_json",
+    )
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -260,10 +614,35 @@ class CharacterBlueprintCreator:
                 "piercing_descriptors": ("STRING", {"default": "", "multiline": True, "placeholder": "One piercing per line, including exact location and jewelry"}),
                 "lower_body_notes": ("STRING", {"default": "", "multiline": True}),
                 "custom_identity_notes": ("STRING", {"default": "", "multiline": True}),
+                "default_top": ("STRING", {"default": "", "multiline": False, "placeholder": "Optional structured top override"}),
+                "default_bottom": ("STRING", {"default": "", "multiline": False, "placeholder": "Optional structured bottom override"}),
+                "default_footwear": ("STRING", {"default": "", "multiline": False, "placeholder": "Optional footwear override"}),
+                "default_outerwear": ("STRING", {"default": "", "multiline": False, "placeholder": "Optional outerwear"}),
+                "default_one_piece": ("STRING", {"default": "", "multiline": False, "placeholder": "Optional dress, bodysuit, romper, or jumpsuit"}),
+                "default_swimwear_top": ("STRING", {"default": "", "multiline": False}),
+                "default_swimwear_bottom": ("STRING", {"default": "", "multiline": False}),
+                "outfit_notes": ("STRING", {"default": "", "multiline": True}),
+                "piercing_location": (["", "Left Eyebrow", "Right Eyebrow", "Left Nostril", "Right Nostril", "Septum", "Bridge", "Left Lip", "Right Lip", "Center Lip", "Other"], {"default": ""}),
+                "piercing_type": (["", "Stud", "Hoop", "Curved Barbell", "Circular Barbell", "Horseshoe", "Clicker", "Seam Ring", "Decorative Ring", "Custom"], {"default": ""}),
+                "piercing_material": (["", "Black Titanium", "Silver Titanium", "Gold", "Rose Gold", "Steel", "Custom"], {"default": ""}),
+                "piercing_visibility": (["", "Subtle", "Normal", "Prominent", "Documentation"], {"default": "Normal"}),
+                "structured_piercing_custom": ("STRING", {"default": "", "multiline": False}),
             },
         }
 
-    def build_blueprint(self, gender, age_range, heritage, skin_tone, complexion, face_shape, jaw_shape, chin_shape, eye_color, eye_shape, eyebrow_shape, nose_shape, lip_shape, hair_color, hair_length, hair_texture, hair_style, height, body_type, bust_size, bust_shape, bust_position, bust_firmness, bust_augmentation, buttocks, default_clothing, jewelry_level, tattoo_status, piercing_status, custom_heritage="", custom_hair_color="", custom_hair_length="", custom_hair_texture="", custom_hair_style="", exact_default_clothing="", jewelry_description="", tattoo_descriptors="", piercing_descriptors="", lower_body_notes="", custom_identity_notes=""):
+    def build_blueprint(
+        self, gender, age_range, heritage, skin_tone, complexion, face_shape, jaw_shape, chin_shape,
+        eye_color, eye_shape, eyebrow_shape, nose_shape, lip_shape, hair_color, hair_length, hair_texture,
+        hair_style, height, body_type, bust_size, bust_shape, bust_position, bust_firmness,
+        bust_augmentation, buttocks, default_clothing, jewelry_level, tattoo_status, piercing_status,
+        custom_heritage="", custom_hair_color="", custom_hair_length="", custom_hair_texture="",
+        custom_hair_style="", exact_default_clothing="", jewelry_description="", tattoo_descriptors="",
+        piercing_descriptors="", lower_body_notes="", custom_identity_notes="", default_top="",
+        default_bottom="", default_footwear="", default_outerwear="", default_one_piece="",
+        default_swimwear_top="", default_swimwear_bottom="", outfit_notes="",
+        piercing_location="", piercing_type="", piercing_material="", piercing_visibility="Normal",
+        structured_piercing_custom="",
+    ):
         heritage_prompt = _heritage_prompt(heritage, custom_heritage)
         face_identity = _join(
             "adult subject", gender.lower(), f"age range {age_range}", heritage_prompt,
@@ -279,64 +658,112 @@ class CharacterBlueprintCreator:
             _hair_value(hair_style, custom_hair_style, "hairstyle"),
             custom_identity_notes,
         )
+
         bust_prompt = _bust_prompt(gender, bust_size, bust_shape, bust_position, bust_firmness, bust_augmentation)
-        upper_body_identity = _join(
+        clothed_bust = _clothed_bust_prompt(gender, bust_size, bust_shape, bust_position)
+
+        anatomy_upper_body = _join(
             f"{height.lower()} height" if height != "Unspecified" else "",
             f"{body_type.lower()} body type" if body_type != "Custom / Unspecified" else "",
             bust_prompt,
         )
-        lower_body_identity = _join(
+        clothed_upper_body = _join(
+            f"{height.lower()} height" if height != "Unspecified" else "",
+            f"{body_type.lower()} body type" if body_type != "Custom / Unspecified" else "",
+            clothed_bust,
+        )
+        anatomy_lower_body = _join(
             f"{buttocks.lower()} buttocks" if buttocks != "Unspecified" else "",
             lower_body_notes,
         )
+        clothed_lower_body = _join(
+            f"{buttocks.lower()} lower-body and gluteal silhouette" if buttocks != "Unspecified" else "",
+            "balanced hip, waist, and leg proportions",
+        )
+
         tattoo_prompt, tattoo_entries, tattoo_warning = _marks_prompt("Tattoo", tattoo_status, tattoo_descriptors)
         piercing_prompt, piercing_entries, piercing_warning = _marks_prompt("Piercing", piercing_status, piercing_descriptors)
+        structured_piercing = _structured_piercing_prompt(
+            piercing_location, piercing_type, piercing_material, piercing_visibility, structured_piercing_custom
+        )
+        if structured_piercing:
+            piercing_prompt = structured_piercing
+            piercing_entries = [structured_piercing]
+            piercing_warning = ""
         marks_prompt = _join(tattoo_prompt, piercing_prompt)
-        if exact_default_clothing.strip():
-            clothing_prompt = f"wearing {exact_default_clothing.strip()}"
-        elif default_clothing == "Clinical Unclothed Documentation":
-            clothing_prompt = "unclothed adult subject in neutral clinical anatomy documentation"
-        elif default_clothing == "Custom":
-            clothing_prompt = ""
-        else:
-            clothing_prompt = f"wearing {default_clothing.lower()}"
+
+        structured_outfit_prompt, outfit_components = _build_profile_outfit(
+            default_clothing, exact_default_clothing, default_top, default_bottom,
+            default_footwear, default_outerwear, default_one_piece,
+            default_swimwear_top, default_swimwear_bottom, outfit_notes,
+        )
         jewelry_prompt = "" if jewelry_level == "None" else _join(f"{jewelry_level.lower()} jewelry", jewelry_description)
-        default_clothing_prompt = _join(clothing_prompt, jewelry_prompt)
-        full_profile_prompt = _join(face_identity, marks_prompt, upper_body_identity, lower_body_identity, default_clothing_prompt)
+        default_clothing_prompt = _join(structured_outfit_prompt, jewelry_prompt)
+
+        upper_body_identity = anatomy_upper_body
+        lower_body_identity = anatomy_lower_body
+        full_profile_prompt = _join(face_identity, marks_prompt, anatomy_upper_body, anatomy_lower_body, default_clothing_prompt)
         base_id = _join(gender, age_range, heritage, face_shape, hair_color, body_type, bust_size)
         character_id = _slug(base_id) + "_" + hashlib.sha1(full_profile_prompt.encode("utf-8")).hexdigest()[:8]
+
         warnings = " ".join(x for x in [tattoo_warning, piercing_warning] if x)
         if bust_position == "High and Tight" and bust_firmness in {"Soft", "Very Soft / Natural Movement"}:
             warnings = _join(warnings, "High and Tight conflicts with the selected soft-tissue setting.")
+        if outfit_components.get("kind") == "complete" and not outfit_components.get("raw"):
+            if not outfit_components.get("top") or not outfit_components.get("bottom"):
+                warnings = _join(warnings, "Complete outfit is missing a top or bottom component.")
+
         blueprint = {
             "schema": "CHARACTER_BLUEPRINT",
-            "schema_version": 1,
+            "schema_version": 2,
             "character_id": character_id,
             "gender": gender,
             "age_range": age_range,
             "heritage": heritage,
             "heritage_prompt": heritage_prompt,
             "face_identity": face_identity,
-            "upper_body_identity": upper_body_identity,
-            "lower_body_identity": lower_body_identity,
+            "upper_body_identity": anatomy_upper_body,
+            "lower_body_identity": anatomy_lower_body,
+            "anatomy_upper_body": anatomy_upper_body,
+            "clothed_upper_body": clothed_upper_body,
+            "anatomy_lower_body": anatomy_lower_body,
+            "clothed_lower_body": clothed_lower_body,
             "bust_prompt": bust_prompt,
             "marks_prompt": marks_prompt,
             "tattoo_entries": tattoo_entries,
             "piercing_entries": piercing_entries,
+            "structured_piercing_prompt": structured_piercing,
             "default_clothing_prompt": default_clothing_prompt,
+            "structured_outfit_prompt": structured_outfit_prompt,
+            "outfit_components": outfit_components,
+            "jewelry_prompt": jewelry_prompt,
             "full_profile_prompt": full_profile_prompt,
             "warnings": warnings,
         }
-        return (face_identity, upper_body_identity, lower_body_identity, bust_prompt, marks_prompt, default_clothing_prompt, full_profile_prompt, character_id, blueprint, warnings)
+
+        return (
+            face_identity, anatomy_upper_body, anatomy_lower_body, bust_prompt, marks_prompt,
+            default_clothing_prompt, full_profile_prompt, character_id, blueprint, warnings,
+            clothed_upper_body, anatomy_upper_body, clothed_lower_body, anatomy_lower_body,
+            structured_outfit_prompt, json.dumps(blueprint, indent=2, ensure_ascii=False, sort_keys=True),
+        )
 
 
 class CharacterShotPlanner:
     CATEGORY = "character creation/core"
     FUNCTION = "plan_shot"
-    DESCRIPTION = "Builds stage-specific Krea and Qwen prompts from a Character Blueprint without sending irrelevant anatomy to face-only shots."
+    DESCRIPTION = "Builds stage-specific Krea and Qwen prompts with authoritative crop-aware clothing or clinical anatomy routing."
 
-    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "INT", "INT", "STRING", "STRING")
-    RETURN_NAMES = ("krea_prompt", "qwen_prompt", "shot_prompt", "clothing_prompt", "marks_prompt", "reference_required", "shot_id", "recommended_width", "recommended_height", "profile_character_id", "planner_notes")
+    RETURN_TYPES = (
+        "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING",
+        "INT", "INT", "STRING", "STRING", "STRING", "STRING", "STRING",
+    )
+    RETURN_NAMES = (
+        "krea_prompt", "qwen_prompt", "shot_prompt", "clothing_prompt", "marks_prompt",
+        "reference_required", "shot_id", "recommended_width", "recommended_height",
+        "profile_character_id", "planner_notes", "effective_body_detail_mode",
+        "outfit_visibility_lock", "outfit_components_prompt",
+    )
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -363,108 +790,383 @@ class CharacterShotPlanner:
                 "custom_lighting": ("STRING", {"default": "", "multiline": True}),
                 "trigger_word": ("STRING", {"default": "", "multiline": False}),
                 "custom_suffix": ("STRING", {"default": "", "multiline": True}),
+                "body_detail_mode": (BODY_DETAIL_MODES, {"default": "Auto by Stage"}),
+                "outfit_coverage": (OUTFIT_COVERAGE, {"default": "Auto by Shot"}),
+                "clothing_priority": (CLOTHING_PRIORITIES, {"default": "Strong"}),
+                "exact_top": ("STRING", {"default": "", "multiline": False}),
+                "exact_bottom": ("STRING", {"default": "", "multiline": False}),
+                "exact_footwear": ("STRING", {"default": "", "multiline": False}),
+                "exact_outerwear": ("STRING", {"default": "", "multiline": False}),
             },
         }
 
-    def plan_shot(self, stage, shot_type, camera_view, pose, expression, clothing_mode, body_region, background, lighting, photo_style, character_blueprint=None, exact_outfit="", custom_pose="", custom_expression="", custom_body_region="", custom_background="", custom_lighting="", trigger_word="", custom_suffix=""):
+    def plan_shot(
+        self, stage, shot_type, camera_view, pose, expression, clothing_mode, body_region,
+        background, lighting, photo_style, character_blueprint=None, exact_outfit="",
+        custom_pose="", custom_expression="", custom_body_region="", custom_background="",
+        custom_lighting="", trigger_word="", custom_suffix="", body_detail_mode="Auto by Stage",
+        outfit_coverage="Auto by Shot", clothing_priority="Strong", exact_top="",
+        exact_bottom="", exact_footwear="", exact_outerwear="",
+    ):
         profile = character_blueprint if isinstance(character_blueprint, dict) else {}
         face = profile.get("face_identity", "adult subject")
-        upper = profile.get("upper_body_identity", "")
-        lower = profile.get("lower_body_identity", "")
         marks = profile.get("marks_prompt", "")
+        anatomy_upper = profile.get("anatomy_upper_body", profile.get("upper_body_identity", ""))
+        clothed_upper = profile.get("clothed_upper_body", profile.get("upper_body_identity", ""))
+        anatomy_lower = profile.get("anatomy_lower_body", profile.get("lower_body_identity", ""))
+        clothed_lower = profile.get("clothed_lower_body", "")
         default_clothing = profile.get("default_clothing_prompt", "")
-        full_profile = profile.get("full_profile_prompt", _join(face, upper, lower, marks, default_clothing))
+        default_components = profile.get("outfit_components", {}) if isinstance(profile.get("outfit_components"), dict) else {}
         character_id = profile.get("character_id", "character")
 
         shot_prompt = _join(SHOT_PROMPTS[shot_type], CAMERA_PROMPTS[camera_view])
+        region = custom_body_region.strip() if body_region == "Custom" and custom_body_region.strip() else body_region
         if shot_type == "Body Close-Up":
-            region = custom_body_region.strip() if body_region == "Custom" and custom_body_region.strip() else body_region
             shot_prompt = _join(shot_prompt, f"focused on {region.lower()}")
+
         pose_prompt = custom_pose.strip() if pose == "Custom" and custom_pose.strip() else pose.lower()
-        expression_prompt = custom_expression.strip() if expression == "Custom" and custom_expression.strip() else expression.lower() + " expression"
+        expression_prompt = (
+            custom_expression.strip() if expression == "Custom" and custom_expression.strip()
+            else EXPRESSION_PROMPTS.get(expression, expression.lower() + " expression")
+        )
         background_prompt = custom_background.strip() if background == "Custom" and custom_background.strip() else background.lower() + " background"
         lighting_prompt = custom_lighting.strip() if lighting == "Custom" and custom_lighting.strip() else lighting.lower()
         style_prompt = photo_style.lower()
 
-        if clothing_mode == "Exact Outfit Override":
-            clothing_prompt = f"wearing {exact_outfit.strip()}" if exact_outfit.strip() else "wearing the exact requested outfit"
-        elif clothing_mode == "Clinical Unclothed":
-            clothing_prompt = "unclothed adult subject in neutral clinical anatomy documentation"
+        effective_body_mode = _resolve_body_mode(stage, clothing_mode, body_detail_mode)
+
+        if clothing_mode == "Clinical Unclothed":
+            clothing_base = "unclothed adult subject in neutral clinical anatomy documentation"
+            components = {"kind": "clinical"}
+            clothing_prompt = clothing_base
+            outfit_lock = ""
         elif clothing_mode == "Preserve Reference Clothing":
-            clothing_prompt = "preserve the clothing already visible in Image 1"
+            clothing_base = "preserve the complete clothing already visible in Image 1"
+            components = {"kind": "preserve"}
+            clothing_prompt = clothing_base
+            outfit_lock = "the same complete reference outfit remains visible in the selected crop"
+        elif clothing_mode == "Exact Outfit Override":
+            components = _override_components(
+                exact_outfit, exact_top, exact_bottom, exact_footwear, exact_outerwear,
+                outfit_coverage,
+            )
+            clothing_base = _component_phrase(components)
+            clothing_prompt, outfit_lock = _crop_outfit_prompt(
+                clothing_base, components, shot_type, region, clothing_priority,
+            )
         else:
-            clothing_prompt = default_clothing
+            components = default_components or {"kind": "complete", "raw": default_clothing}
+            clothing_base = default_clothing or _component_phrase(components)
+            clothing_prompt, outfit_lock = _crop_outfit_prompt(
+                clothing_base, components, shot_type, region, clothing_priority,
+            )
 
         face_only = shot_type in {"Face Close-Up", "Head and Shoulders"}
         upper_visible = shot_type in {"Chest-Up", "Waist-Up Midshot", "Three-Quarter Body", "Full Body", "Body Close-Up"}
         lower_visible = shot_type in {"Three-Quarter Body", "Full Body", "Body Close-Up"}
 
-        krea_identity = _join(face, marks, "" if face_only else upper, lower if lower_visible else "", clothing_prompt)
-        krea_prompt = _join(trigger_word, shot_prompt, pose_prompt, expression_prompt, krea_identity, background_prompt, lighting_prompt, style_prompt, custom_suffix)
+        upper = anatomy_upper if effective_body_mode == "Clinical Anatomy" else clothed_upper
+        lower = anatomy_lower if effective_body_mode == "Clinical Anatomy" else clothed_lower
+
+        visible_upper = "" if face_only else upper
+        visible_lower = lower if lower_visible else ""
+
+        # Clothing is deliberately placed immediately after framing so it is not buried after anatomy.
+        krea_prompt = _join(
+            trigger_word,
+            shot_prompt,
+            clothing_prompt,
+            pose_prompt,
+            expression_prompt,
+            face,
+            marks,
+            visible_upper,
+            visible_lower,
+            background_prompt,
+            lighting_prompt,
+            style_prompt,
+            outfit_lock,
+            custom_suffix,
+        )
 
         if stage == "Krea Identity Anchor":
             reference = "None — text-to-image"
             qwen_prompt = ""
-            planner_notes = "Krea receives face, hair, visible markings, and only the body traits relevant to the selected crop."
+            planner_notes = _join(
+                "Krea identity anchor uses crop-relevant identity traits",
+                f"body detail mode: {effective_body_mode}",
+                "clothing is placed immediately after framing and is crop-aware",
+            )
         elif stage == "Qwen Face Documentation":
             reference = "Portrait Anchor"
             qwen_prompt = _join(
                 "Edit Image 1 into a realistic photograph of the same adult person",
                 "preserve the exact recognizable face, hair, skin characteristics, and permanent facial markings from Image 1",
-                shot_prompt, pose_prompt, expression_prompt, face, marks,
-                background_prompt, lighting_prompt, style_prompt,
+                shot_prompt,
+                clothing_prompt,
+                pose_prompt,
+                expression_prompt,
+                face,
+                marks,
+                background_prompt,
+                lighting_prompt,
+                style_prompt,
+                outfit_lock,
                 "keep natural skin texture, realistic moist eyes, ordinary camera sharpness, and believable hair strands",
                 custom_suffix,
             )
-            planner_notes = "Uses only face, hair, expression, camera, and permanent markings."
+            planner_notes = "Uses only face, hair, expression, camera, visible clothing, and permanent markings."
         elif stage == "Qwen Upper-Body Anchor":
             reference = "Portrait Anchor"
             qwen_prompt = _join(
-                "Edit Image 1 into a realistic waist-up photograph of the same adult person",
+                "Edit Image 1 into a realistic upper-body photograph of the same adult person",
                 "preserve the exact recognizable face and hair from Image 1",
-                shot_prompt, pose_prompt, expression_prompt, face, marks, upper, clothing_prompt,
-                background_prompt, lighting_prompt, style_prompt,
+                shot_prompt,
+                clothing_prompt,
+                pose_prompt,
+                expression_prompt,
+                face,
+                marks,
+                upper,
+                background_prompt,
+                lighting_prompt,
+                style_prompt,
+                outfit_lock,
                 "establish consistent shoulders, chest, torso, arms, and natural waist while preserving identity",
                 custom_suffix,
             )
-            planner_notes = "Introduces upper-body and bust traits; lower-body traits remain excluded."
+            planner_notes = _join("Introduces upper-body traits", f"body detail mode: {effective_body_mode}")
         elif stage == "Qwen Anatomy Documentation":
             reference = "Portrait or Anatomy Anchor"
+            clinical_clothing = "unclothed adult subject in neutral clinical anatomy documentation"
             qwen_prompt = _join(
                 "Edit Image 1 into neutral adult clinical anatomy documentation of the same person",
                 "preserve exact face, hair, body proportions, tattoos, and piercings",
-                shot_prompt, pose_prompt, face, marks, upper, lower, clothing_prompt,
-                background_prompt, lighting_prompt, "clinical documentation photography", custom_suffix,
+                shot_prompt,
+                clinical_clothing,
+                pose_prompt,
+                face,
+                marks,
+                anatomy_upper,
+                anatomy_lower if lower_visible else "",
+                background_prompt,
+                lighting_prompt,
+                "clinical documentation photography",
+                custom_suffix,
             )
-            planner_notes = "Use Clinical Unclothed clothing mode for anatomy documentation."
+            effective_body_mode = "Clinical Anatomy"
+            planner_notes = "Clinical anatomy mode uses the full anatomy description and excludes clothing."
         elif stage == "Qwen Clothing Edit":
             reference = "Anatomy or Clothed Anchor"
             qwen_prompt = _join(
                 "Edit Image 1 into a realistic wardrobe photograph of the same adult person",
                 "preserve the exact face, hair, body shape, chest proportions, waist, tattoos, and piercings from Image 1",
-                shot_prompt, pose_prompt, expression_prompt,
-                f"replace the current clothing state with {clothing_prompt}",
-                "the requested garment is fully worn with realistic fabric, seams, folds, and fit",
-                background_prompt, lighting_prompt, style_prompt, custom_suffix,
+                shot_prompt,
+                clothing_prompt,
+                pose_prompt,
+                expression_prompt,
+                face,
+                marks,
+                clothed_upper,
+                clothed_lower if lower_visible else "",
+                background_prompt,
+                lighting_prompt,
+                style_prompt,
+                outfit_lock,
+                "render realistic fabric, seams, folds, edges, straps, waistbands, and garment tension",
+                custom_suffix,
             )
-            planner_notes = "Exact Outfit Override is recommended for wardrobe tests."
+            effective_body_mode = "Clothed Silhouette"
+            planner_notes = "Wardrobe edit uses clothed silhouette only; anatomy-only lower-body notes are excluded."
         elif stage == "Qwen Body Close-Up":
             reference = "Anatomy Anchor"
             qwen_prompt = _join(
                 "Edit Image 1 into focused adult body-documentation photography of the same person",
                 "preserve exact body proportions, skin characteristics, tattoos, and piercings",
-                shot_prompt, pose_prompt, upper if upper_visible else "", lower if lower_visible else "", marks, clothing_prompt,
-                background_prompt, lighting_prompt, "clinical documentation photography", custom_suffix,
+                shot_prompt,
+                clothing_prompt,
+                pose_prompt,
+                anatomy_upper if upper_visible else "",
+                anatomy_lower if lower_visible else "",
+                marks,
+                background_prompt,
+                lighting_prompt,
+                "clinical documentation photography",
+                custom_suffix,
             )
-            planner_notes = "Select Body Close-Up and the exact body region."
+            planner_notes = "Body close-up uses anatomy details and the selected body region."
         else:
             reference = "Mini LoRA loaded in Krea model lane"
             qwen_prompt = ""
-            krea_prompt = _join(trigger_word, shot_prompt, pose_prompt, expression_prompt, full_profile, clothing_prompt, background_prompt, lighting_prompt, style_prompt, custom_suffix)
-            planner_notes = "Krea expansion uses the complete profile because identity is supplied by the mini LoRA."
+            planner_notes = _join(
+                "Krea mini-LoRA expansion uses the targeted face and body profile",
+                f"body detail mode: {effective_body_mode}",
+                "clothing is authoritative and crop-aware",
+            )
 
-        if shot_type == "Face Close-Up": width, height = 1024, 1024
-        elif shot_type in {"Head and Shoulders", "Chest-Up", "Waist-Up Midshot", "Body Close-Up"}: width, height = 1024, 1280
-        else: width, height = 1024, 1536
-        shot_id = _slug(_join(character_id, stage, shot_type, camera_view, pose))
-        return (krea_prompt, qwen_prompt, shot_prompt, clothing_prompt, marks, reference, shot_id, width, height, character_id, planner_notes)
+        if shot_type == "Face Close-Up":
+            width, height = 1024, 1024
+        elif shot_type in {"Head and Shoulders", "Chest-Up", "Waist-Up Midshot", "Body Close-Up"}:
+            width, height = 1024, 1280
+        else:
+            width, height = 1024, 1536
+
+        shot_id = _slug(_join(character_id, stage, shot_type, camera_view, pose, clothing_mode))
+        return (
+            krea_prompt, qwen_prompt, shot_prompt, clothing_prompt, marks, reference, shot_id,
+            width, height, character_id, planner_notes, effective_body_mode, outfit_lock,
+            _component_phrase(components) if components.get("kind") not in {"clinical", "preserve"} else clothing_base,
+        )
+
+
+BOOTSTRAP_PLANS = ["Bootstrap Quick — 24", "Bootstrap Standard — 40", "Bootstrap Extended — 60", "Post-LoRA Anatomy — 40", "Post-LoRA Clothed Actions — 60", "Post-LoRA Complete Pack — 120"]
+
+
+def _dataset_specs(plan: str) -> list[dict[str, str]]:
+    face = [
+        ("face_front_neutral", "face", "face close-up, front view, neutral expression"),
+        ("face_three_quarter_left", "face", "face close-up, three-quarter left view, neutral expression"),
+        ("face_three_quarter_right", "face", "face close-up, three-quarter right view, neutral expression"),
+        ("face_left_profile", "face", "face close-up, true left profile, neutral expression"),
+        ("face_right_profile", "face", "face close-up, true right profile, neutral expression"),
+        ("face_slight_up", "face", "face close-up, chin slightly raised, camera level with the nose"),
+        ("face_slight_down", "face", "face close-up, chin slightly lowered, camera slightly above eye level"),
+        ("face_soft_smile", "face", "face close-up, front view, natural closed-mouth smile"),
+        ("face_serious", "face", "face close-up, front view, serious expression"),
+        ("face_focus", "face", "head-and-shoulders portrait, focused expression"),
+        ("face_eyes_left", "face", "face close-up, eyes looking slightly left while head remains centered"),
+        ("face_eyes_right", "face", "face close-up, eyes looking slightly right while head remains centered"),
+        ("face_rear_turn_left", "face", "rear three-quarter left view with head turned back toward camera"),
+        ("face_rear_turn_right", "face", "rear three-quarter right view with head turned back toward camera"),
+        ("face_window_left", "face", "head-and-shoulders portrait near a window, three-quarter left view"),
+        ("face_window_right", "face", "head-and-shoulders portrait near a window, three-quarter right view"),
+    ]
+    upper = [
+        ("upper_front", "upper_body", "waist-up midshot, front view, arms relaxed"),
+        ("upper_three_quarter_left", "upper_body", "waist-up midshot, three-quarter left view"),
+        ("upper_three_quarter_right", "upper_body", "waist-up midshot, three-quarter right view"),
+        ("upper_left_profile", "upper_body", "waist-up midshot, true left profile"),
+        ("upper_right_profile", "upper_body", "waist-up midshot, true right profile"),
+        ("upper_seated_front", "upper_body", "waist-up seated portrait, front view"),
+        ("upper_seated_left", "upper_body", "waist-up seated portrait, three-quarter left view"),
+        ("upper_seated_right", "upper_body", "waist-up seated portrait, three-quarter right view"),
+        ("upper_arms_crossed", "upper_body", "waist-up midshot, arms loosely crossed"),
+        ("upper_hand_waist", "upper_body", "waist-up midshot, one hand resting naturally at the waist"),
+        ("upper_lean_left", "upper_body", "waist-up midshot, slight natural lean left"),
+        ("upper_lean_right", "upper_body", "waist-up midshot, slight natural lean right"),
+        ("upper_rear_left", "upper_body", "rear three-quarter left upper-body view with head turned toward camera"),
+        ("upper_rear_right", "upper_body", "rear three-quarter right upper-body view with head turned toward camera"),
+        ("upper_standing_casual", "upper_body", "chest-up casual standing portrait, shoulders relaxed"),
+        ("upper_outdoor", "upper_body", "waist-up outdoor portrait in soft overcast daylight"),
+        ("upper_home", "upper_body", "waist-up natural home portrait, unposed"),
+        ("upper_camera_low", "upper_body", "waist-up portrait from a slightly lower camera angle"),
+        ("upper_camera_high", "upper_body", "waist-up portrait from a slightly higher camera angle"),
+        ("upper_side_light", "upper_body", "waist-up portrait with soft side window light"),
+    ]
+    expr = [
+        ("expression_neutral", "expression", "head-and-shoulders portrait, neutral expression"),
+        ("expression_closed_smile", "expression", "head-and-shoulders portrait, natural closed-mouth smile"),
+        ("expression_smile", "expression", "head-and-shoulders portrait, genuine natural smile"),
+        ("expression_serious", "expression", "head-and-shoulders portrait, serious expression"),
+        ("expression_focused", "expression", "head-and-shoulders portrait, focused expression"),
+        ("expression_surprised", "expression", "head-and-shoulders portrait, mild natural surprise"),
+        ("expression_concerned", "expression", "head-and-shoulders portrait, mildly concerned expression"),
+        ("expression_confident", "expression", "head-and-shoulders portrait, confident expression"),
+    ]
+    body = [
+        ("body_three_quarter_front", "body_confirmation", "three-quarter-body photograph, front view, relaxed standing"),
+        ("body_three_quarter_left", "body_confirmation", "three-quarter-body photograph, three-quarter left view"),
+        ("body_three_quarter_right", "body_confirmation", "three-quarter-body photograph, three-quarter right view"),
+        ("body_full_front", "body_confirmation", "full-body photograph, front view, neutral standing"),
+        ("body_full_left", "body_confirmation", "full-body photograph, true left profile"),
+        ("body_full_right", "body_confirmation", "full-body photograph, true right profile"),
+        ("body_full_back", "body_confirmation", "full-body photograph, direct back view"),
+        ("body_walking", "body_confirmation", "full-body photograph, natural walking step"),
+        ("body_seated", "body_confirmation", "three-quarter-body seated pose, relaxed posture"),
+        ("body_leaning", "body_confirmation", "three-quarter-body pose, lightly leaning against a wall"),
+        ("body_rear_turn", "body_confirmation", "full-body rear three-quarter view with head turned toward camera"),
+        ("body_arms_relaxed", "body_confirmation", "full-body front view with arms naturally relaxed at sides"),
+        ("body_hand_waist", "body_confirmation", "three-quarter-body pose with one hand at the waist"),
+        ("body_casual_home", "body_confirmation", "full-body natural home photograph, ordinary unposed stance"),
+        ("body_outdoor", "body_confirmation", "full-body outdoor photograph in soft daylight"),
+        ("body_gym_stance", "body_confirmation", "full-body gym photograph in a neutral ready stance"),
+    ]
+    anatomy = [(f"anatomy_{i:02d}", "anatomy", desc) for i, desc in enumerate([
+        "clinical upper-body documentation, front view", "clinical upper-body documentation, three-quarter left view", "clinical upper-body documentation, three-quarter right view", "clinical upper-body documentation, left profile", "clinical upper-body documentation, right profile", "clinical upper-body documentation, back view", "clinical torso documentation focused on chest and ribcage", "clinical torso documentation focused on abdomen and waist", "clinical torso documentation focused on upper back and shoulders", "clinical torso documentation focused on lower back and waist", "clinical body documentation focused on hips front", "clinical body documentation focused on hips rear", "clinical full-body documentation, front view", "clinical full-body documentation, left profile", "clinical full-body documentation, right profile", "clinical full-body documentation, back view", "clinical three-quarter-body documentation, front view", "clinical three-quarter-body documentation, rear three-quarter view", "clinical side torso documentation, left side", "clinical side torso documentation, right side",
+    ], 1)]
+    actions = [(f"action_{i:02d}", "clothed_action", desc) for i, desc in enumerate([
+        "waist-up casual standing photo", "waist-up natural walking photo", "waist-up seated on a couch", "waist-up leaning on a kitchen counter", "waist-up preparing healthy food", "waist-up holding a coffee mug", "waist-up working at a desk", "waist-up outdoor walking photo", "waist-up gym warm-up photo", "waist-up holding dumbbells", "waist-up stretching", "waist-up post-workout photo", "full-body casual standing", "full-body walking outdoors", "full-body seated on a chair", "full-body leaning against a wall", "full-body kitchen activity", "full-body office activity", "full-body gym stance", "full-body bodyweight squat setup",
+    ], 1)]
+    if plan == "Bootstrap Quick — 24": raw = face[:8] + upper[:8] + expr[:4] + body[:4]
+    elif plan == "Bootstrap Standard — 40": raw = face[:12] + upper[:14] + expr[:6] + body[:8]
+    elif plan == "Bootstrap Extended — 60": raw = face[:16] + upper[:20] + expr[:8] + body[:16]
+    elif plan == "Post-LoRA Anatomy — 40": raw = anatomy * 2
+    elif plan == "Post-LoRA Clothed Actions — 60": raw = actions * 3
+    else: raw = anatomy * 2 + actions * 4
+    return [{"shot_id": a, "category": b, "description": c} for a,b,c in raw]
+
+
+class QwenDatasetQueue:
+    CATEGORY = "character creation/dataset"
+    FUNCTION = "build_queue"
+    DESCRIPTION = "Creates a one-click list of Qwen Image Edit prompts from one approved headshot. Connect list outputs to one reusable Qwen edit lane."
+    RETURN_TYPES = ("STRING", "INT", "STRING", "STRING", "STRING", "INT", "INT", "STRING")
+    RETURN_NAMES = ("qwen_prompts", "seeds", "shot_ids", "categories", "filename_prefixes", "widths", "heights", "dataset_plan_json")
+    OUTPUT_IS_LIST = (True, True, True, True, True, True, True, True)
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "character_blueprint": ("CHARACTER_BLUEPRINT",),
+            "dataset_plan": (BOOTSTRAP_PLANS, {"default": "Bootstrap Standard — 40"}),
+            "starting_seed": ("INT", {"default": 1000, "min": 0, "max": 0xffffffffffffffff}),
+            "variations_per_shot": ("INT", {"default": 1, "min": 1, "max": 4}),
+            "output_root": ("STRING", {"default": "FCC_Dataset", "multiline": False}),
+            "reference_label": ("STRING", {"default": "Image 1", "multiline": False}),
+        }, "optional": {
+            "prompt_suffix": ("STRING", {"default": "", "multiline": True}),
+            "complete_outfit_override": ("STRING", {"default": "", "multiline": True}),
+        }}
+
+    def build_queue(self, character_blueprint, dataset_plan, starting_seed, variations_per_shot, output_root, reference_label, prompt_suffix="", complete_outfit_override=""):
+        profile = character_blueprint if isinstance(character_blueprint, dict) else {}
+        face = profile.get("face_identity", "adult subject")
+        marks = profile.get("marks_prompt", "")
+        upper = profile.get("clothed_upper_body", profile.get("upper_body_identity", ""))
+        lower = profile.get("clothed_lower_body", profile.get("lower_body_identity", ""))
+        anatomy_upper = profile.get("anatomy_upper_body", profile.get("upper_body_identity", ""))
+        anatomy_lower = profile.get("anatomy_lower_body", profile.get("lower_body_identity", ""))
+        outfit = complete_outfit_override.strip() or profile.get("default_clothing_prompt", "complete simple fitted clothing")
+        character_id = profile.get("character_id", "character")
+        specs = _dataset_specs(dataset_plan)
+        prompts=[]; seeds=[]; ids=[]; cats=[]; prefixes=[]; widths=[]; heights=[]; manifest=[]
+        idx=0
+        for spec in specs:
+            for variation in range(variations_per_shot):
+                cat=spec["category"]
+                clinical = cat == "anatomy"
+                if clinical:
+                    wardrobe = "unclothed adult subject in neutral clinical anatomy documentation"
+                    body = _join(anatomy_upper, anatomy_lower)
+                    style = "neutral clinical documentation photography, even lighting, plain background"
+                else:
+                    wardrobe = outfit
+                    body = _join(upper, lower if cat in {"body_confirmation", "clothed_action"} else "")
+                    style = "ordinary realistic consumer-camera photograph, natural skin texture, believable eyes and hair, no stylization"
+                prompt = _join(
+                    f"Edit {reference_label} into a realistic photograph of the same adult person",
+                    f"preserve the exact recognizable facial identity, hairline, skin characteristics, tattoos, and piercings from {reference_label}",
+                    spec["description"], wardrobe, face, marks, body, style,
+                    "keep identity consistent and do not invent or remove permanent markings",
+                    prompt_suffix,
+                )
+                seed = int(starting_seed) + idx
+                sid = f"{spec['shot_id']}_v{variation+1:02d}"
+                prefix = f"{output_root}/{cat}/{idx+1:04d}_{sid}"
+                portrait = any(k in spec["description"] for k in ("face", "head-and-shoulders", "waist-up", "upper-body", "torso"))
+                w,h=(1024,1280) if portrait else (1024,1536)
+                prompts.append(prompt); seeds.append(seed); ids.append(sid); cats.append(cat); prefixes.append(prefix); widths.append(w); heights.append(h)
+                manifest.append({"index": idx+1, "shot_id": sid, "category": cat, "seed": seed, "filename_prefix": prefix, "width": w, "height": h, "prompt": prompt})
+                idx += 1
+        plan_json = json.dumps({"schema":"FCC_QWEN_DATASET_PLAN", "schema_version":1, "character_id":character_id, "plan":dataset_plan, "variations_per_shot":variations_per_shot, "total_images":len(manifest), "items":manifest}, indent=2, ensure_ascii=False)
+        return prompts, seeds, ids, cats, prefixes, widths, heights, [plan_json for _ in prompts]

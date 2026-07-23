@@ -1,0 +1,35 @@
+FULL CHARACTER CREATION LITE v2.1
+Core: full_character_creation_core v1.2.0
+
+INSTALL
+1. Remove or rename the older custom_nodes/full_character_creation_core folder.
+2. Extract full_character_creation_core_v1_2_0.zip into ComfyUI/custom_nodes.
+3. Restart ComfyUI.
+4. Load Full Character Creation Lite v2.1.json.
+
+MAIN CHANGES
+- Blueprint JSON output added as the final Character Blueprint Creator output.
+- Structured piercing controls added. Septum placement explicitly says centered through the nasal septum below the nose, not through a nostril or the upper lip.
+- Expression list expanded. Ahegao is available under `Ahegao (Stylized Adult)` but is not included in the default identity dataset plans.
+- New ONE-CLICK QWEN DATASET QUEUE node.
+
+ONE-CLICK QWEN DATASET FLOW
+1. Generate and approve the initial Krea identity headshot.
+2. Use that approved headshot as Image 1 in the reusable Qwen Image Edit lane.
+3. Connect QwenDatasetQueue.qwen_prompts to the Qwen prompt input.
+4. Connect seeds to the sampler seed.
+5. Connect filename_prefixes to the save-image filename prefix.
+6. Select Bootstrap Standard — 40 and queue the workflow once.
+
+The node emits prompt/seed/file lists. ComfyUI should map each list item through a compatible downstream Qwen lane. Some third-party nodes may not accept mapped list inputs; in that case use a list-aware iterator or the existing csv_qwen_suite around these outputs.
+
+DATASET PLANS
+- Bootstrap Quick — 24
+- Bootstrap Standard — 40
+- Bootstrap Extended — 60
+- Post-LoRA Anatomy — 40
+- Post-LoRA Clothed Actions — 60
+- Post-LoRA Complete Pack — 120
+
+IMPORTANT
+Review and curate outputs before LoRA training. One-click generation does not mean every generated image should be kept.
